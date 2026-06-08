@@ -1,0 +1,643 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>ZOMBIES — The Last Stand</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Creepster&family=Nosifer&family=Roboto+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+      @keyframes flicker {
+        0%,19%,21%,23%,25%,54%,56%,100%{opacity:.99;text-shadow:0 0 10px #f00,0 0 20px #f00}
+        20%,24%,55%{opacity:.4;text-shadow:none}
+      }
+      .animate-flicker{animation:flicker 4s infinite alternate}
+      @keyframes walk{0%{transform:translateY(0)}50%{transform:translateY(-5px) rotate(-3deg)}100%{transform:translateY(0)}}
+      .animate-walk{animation:walk .3s infinite ease-in-out}
+      @keyframes shake{0%,100%{transform:translateX(0)}20%{transform:translateX(-3px) rotate(-1deg)}40%{transform:translateX(3px) rotate(1deg)}60%{transform:translateX(-2px)}80%{transform:translateX(2px)}}
+      .animate-shake-hover:hover{animation:shake .5s infinite}
+      .crt-overlay{background:linear-gradient(rgba(18,16,16,0) 50%,rgba(0,0,0,.25) 50%),linear-gradient(90deg,rgba(255,0,0,.06),rgba(0,255,0,.02),rgba(0,0,255,.06));background-size:100% 2px,3px 100%;pointer-events:none}
+      @keyframes joystickPulse{0%,100%{box-shadow:0 0 15px rgba(239,68,68,.4),inset 0 0 10px rgba(239,68,68,.2);border-color:rgba(239,68,68,.8)}50%{box-shadow:0 0 35px rgba(59,130,246,.8),inset 0 0 20px rgba(59,130,246,.4);border-color:rgba(59,130,246,1)}}
+      .animate-joystick-pulse{animation:joystickPulse 2.5s infinite ease-in-out}
+      @keyframes slideUp{from{opacity:0;transform:translateY(30px)}to{opacity:1;transform:translateY(0)}}
+      .animate-in{animation:slideUp .3s ease-out forwards}
+      @keyframes fadeInUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
+      .animate-fade-in-up{animation:fadeInUp .5s ease-out forwards}
+      @keyframes glitch{0%,100%{clip-path:none;transform:none}5%{clip-path:polygon(0 20%,100% 20%,100% 25%,0 25%);transform:translateX(-4px)}10%{clip-path:polygon(0 65%,100% 65%,100% 70%,0 70%);transform:translateX(4px)}15%{clip-path:none;transform:none}}
+      .animate-glitch{animation:glitch 6s infinite}
+      .survivor-container{position:relative;display:inline-block}
+      *{box-sizing:border-box}
+      button,[class*="touch-none"]{-webkit-touch-callout:none}
+    </style>
+    <script type="importmap">
+{
+  "imports": {
+    "lucide-react": "https://esm.sh/lucide-react@0.383.0",
+    "react/jsx-runtime": "https://esm.sh/react@19.0.0/jsx-runtime",
+    "react/": "https://esm.sh/react@19.0.0/",
+    "react": "https://esm.sh/react@19.0.0",
+    "react-dom/": "https://esm.sh/react-dom@19.0.0/"
+  }
+}
+    </script>
+  </head>
+  <body class="bg-black text-white overflow-hidden touch-none select-none">
+    <div id="root"></div>
+    <script type="module">
+      import { createRoot } from 'react-dom/client';
+      import { createElement as h, useState, useEffect, useRef, useCallback } from 'react';
+
+      // ── Audio ──────────────────────────────────────────────────────────────
+      let _ctx = null;
+      const getCtx = () => {
+        if (!_ctx) _ctx = new AudioContext();
+        if (_ctx.state === 'suspended') _ctx.resume();
+        return _ctx;
+      };
+      const tone = (freq, dur, type = 'sine', vol = 0.12) => {
+        try {
+          const ctx = getCtx();
+          const osc = ctx.createOscillator(), g = ctx.createGain();
+          osc.connect(g); g.connect(ctx.destination);
+          osc.type = type; osc.frequency.value = freq;
+          g.gain.setValueAtTime(vol, ctx.currentTime);
+          g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + dur);
+          osc.start(); osc.stop(ctx.currentTime + dur);
+        } catch(_){}
+      };
+      const playShoot   = () => tone(800, .08, 'sawtooth', .12);
+      const playGroan   = () => tone(120, .4, 'triangle', .08);
+      const playScream  = () => { tone(400, .3, 'sawtooth', .2); setTimeout(() => tone(200, .5, 'triangle', .15), 150); };
+      const playWin     = () => [523,659,784,1047].forEach((f,i) => setTimeout(() => tone(f, .25, 'sine', .18), i*120));
+      const playPowerUp = () => [440,550,660].forEach((f,i) => setTimeout(() => tone(f, .15, 'sine', .15), i*80));
+      const playNuke    = () => [200,150,100,80].forEach((f,i) => setTimeout(() => tone(f, .3, 'sawtooth', .25), i*100));
+      const playHover   = () => tone(660, .05, 'sine', .08);
+      const playStart   = () => [220,330,440,660].forEach((f,i) => setTimeout(() => tone(f, .2, 'sawtooth', .15), i*80));
+
+      // ── Constants ──────────────────────────────────────────────────────────
+      const BASE_SPEED  = 7.5;
+      const ZOMBIE_SPD  = 1.0;
+      const BOSS_SPD    = 0.6;
+      const BULLET_SPD  = 15;
+      const BASE_Z      = 3;
+      const SAFE_R      = 250;
+      const ITEM_EMOJI  = { MEDKIT:'💊', SHOTGUN:'💥', MACHINE_GUN:'🔫', SPEED:'⚡', NUKE:'☢️', GRENADE:'⏱️' };
+      const HS_KEY      = 'zombie_hs';
+
+      const safePos = (w, h, avoid, r) => {
+        let p, n = 0;
+        do { p = { x: Math.random()*(w-60), y: Math.random()*(h-60) }; n++; }
+        while (Math.hypot(p.x-avoid.x, p.y-avoid.y) < r && n < 100);
+        return p;
+      };
+
+      // ── Game Component ─────────────────────────────────────────────────────
+      function Game({ onExit }) {
+        const containerRef    = useRef(null);
+        const joystickBaseRef = useRef(null);
+        const joystickStickRef= useRef(null);
+
+        const [level,     setLevel]     = useState(1);
+        const [lives,     setLives]     = useState(3);
+        const [grenades,  setGrenades]  = useState(2);
+        const [score,     setScore]     = useState(0);
+        const [kills,     setKills]     = useState(0);
+        const [gameOver,  setGameOver]  = useState(null);
+        const [activePU,  setActivePU]  = useState(null);
+        const [showMiss,  setShowMiss]  = useState(true);
+        const [frozen,    setFrozen]    = useState(false);
+
+        const pPos        = useRef({ x:50, y:50 });
+        const zPos        = useRef([]);
+        const bosses      = useRef([]);
+        const bullets     = useRef([]);
+        const items       = useRef([]);
+        const exitPos     = useRef({ x:90, y:10 });
+        const puState     = useRef({ type:null, endTime:0 });
+        const freezeEnd   = useRef(0);
+        const joystick    = useRef({ active:false, dx:0, dy:0 });
+        const aimDir      = useRef({ x:1, y:0 });
+        const keys        = useRef(new Set());
+        const raf         = useRef(0);
+        const lastZSnd    = useRef(0);
+        const lastItem    = useRef(0);
+        const lastAuto    = useRef(0);
+        const bId = useRef(0), iId = useRef(0), bossId = useRef(0);
+        const scoreR      = useRef(0);
+        const levelR      = useRef(1);
+        const livesR      = useRef(3);
+        const grenadesR   = useRef(2);
+        const frozenR     = useRef(false);
+        const goR         = useRef(null);
+        const showMissR   = useRef(true);
+        const puR         = useRef(null);
+        const dom         = useRef({});
+
+        const refreshDOM = () => {
+          dom.current.player  = document.getElementById('gp');
+          dom.current.exit    = document.getElementById('ge');
+          dom.current.bossCt  = document.getElementById('gc-boss');
+          dom.current.bulCt   = document.getElementById('gc-bul');
+          dom.current.itmCt   = document.getElementById('gc-itm');
+          dom.current.scoreEl = document.getElementById('hud-sc');
+          dom.current.zombies = Array.from(document.querySelectorAll('.gz'));
+        };
+
+        const spawnItem = (w, h) => {
+          const r = Math.random();
+          let t = r<.2?'MEDKIT':r<.35?'GRENADE':r<.5?'SPEED':r<.7?'SHOTGUN':r<.9?'MACHINE_GUN':'NUKE';
+          items.current.push({ id:iId.current++, x:w*.15+Math.random()*(w*.7), y:h*.15+Math.random()*(h*.7), type:t, emoji:ITEM_EMOJI[t] });
+        };
+
+        const renderDOM = () => {
+          const { player, exit, bossCt, bulCt, itmCt } = dom.current;
+          const zEls = dom.current.zombies || [];
+          const fr = frozenR.current;
+
+          if (player) {
+            player.style.transform = `translate(${pPos.current.x}px,${pPos.current.y}px)`;
+            const inner = player.firstElementChild;
+            if (inner) inner.style.transform = aimDir.current.x < 0 ? 'scaleX(-1)' : 'scaleX(1)';
+          }
+          if (exit) exit.style.transform = `translate(${exitPos.current.x}px,${exitPos.current.y}px)`;
+
+          zEls.forEach((el, i) => {
+            const z = zPos.current[i];
+            if (z) {
+              el.style.display = 'block';
+              const sx = pPos.current.x < z.x ? -1 : 1;
+              el.style.transform = `translate(${z.x}px,${z.y}px) scaleX(${sx})`;
+              el.style.filter = fr ? 'hue-rotate(180deg) brightness(1.5)' : '';
+            } else el.style.display = 'none';
+          });
+
+          if (bossCt) bossCt.innerHTML = bosses.current.map(b => {
+            const hp = (b.hp/b.maxHp)*100;
+            const sx = pPos.current.x < b.x ? -1 : 1;
+            const fi = fr ? 'hue-rotate(180deg) brightness(1.5)' : '';
+            return `<div style="transform:translate(${b.x}px,${b.y}px) scale(1.5);filter:${fi}" class="absolute top-0 left-0 text-7xl z-20">
+              <div style="transform:scaleX(${sx})">👹</div>
+              <div class="absolute -top-4 left-0 w-full h-2 bg-gray-800 rounded"><div style="width:${hp}%" class="h-full bg-red-600 rounded"></div></div>
+            </div>`;
+          }).join('');
+
+          if (bulCt) bulCt.innerHTML = bullets.current.map(b =>
+            `<div style="transform:translate(${b.x}px,${b.y}px)" class="absolute top-0 left-0 ${b.isSpecial?'w-4 h-2 bg-orange-400':'w-3 h-3 bg-yellow-300'} rounded-full shadow-[0_0_6px_yellow]"></div>`
+          ).join('');
+
+          if (itmCt) itmCt.innerHTML = items.current.map(it =>
+            `<div style="transform:translate(${it.x}px,${it.y}px)" class="absolute top-0 left-0 text-4xl animate-bounce z-20">${it.emoji}</div>`
+          ).join('');
+
+          if (dom.current.scoreEl) dom.current.scoreEl.textContent = scoreR.current;
+        };
+
+        const initRound = useCallback((lv) => {
+          if (!containerRef.current) return;
+          const { width:w, height:h } = containerRef.current.getBoundingClientRect();
+          pPos.current = { x:w/2-25, y:h/2-25 };
+          exitPos.current = safePos(w, h, pPos.current, SAFE_R);
+          bullets.current = []; items.current = []; bosses.current = [];
+          puState.current = { type:null, endTime:0 };
+          frozenR.current = false; puR.current = null;
+          setActivePU(null); setFrozen(false);
+          zPos.current = Array.from({ length: BASE_Z + Math.floor(lv*1.5) }, () => safePos(w, h, pPos.current, SAFE_R));
+          if (lv >= 3) {
+            for (let i = 0; i < Math.floor(lv/3); i++) {
+              const p = safePos(w, h, pPos.current, SAFE_R);
+              bosses.current.push({ id:bossId.current++, x:p.x, y:p.y, hp:15+lv*5, maxHp:15+lv*5 });
+            }
+          }
+          setTimeout(refreshDOM, 50);
+          renderDOM();
+        }, []);
+
+        const handleShoot = useCallback((e) => {
+          e?.preventDefault(); e?.stopPropagation();
+          playShoot();
+          const sx = pPos.current.x+25, sy = pPos.current.y+25;
+          const len = Math.hypot(aimDir.current.x, aimDir.current.y) || 1;
+          const bx = aimDir.current.x/len, by = aimDir.current.y/len;
+          const spawn = (ao, sp=false) => {
+            const c=Math.cos(ao), s=Math.sin(ao);
+            const dx=bx*c-by*s, dy=bx*s+by*c;
+            const spd=BULLET_SPD*(sp?1.5:1);
+            bullets.current.push({ id:bId.current++, x:sx, y:sy, vx:dx*spd, vy:dy*spd, isSpecial:sp });
+          };
+          const pu = puState.current;
+          if (pu.type==='MACHINE_GUN' && Date.now()<pu.endTime) {
+            spawn(0,true); setTimeout(()=>spawn(.1,true),50); setTimeout(()=>spawn(-.1,true),100);
+          } else if (pu.type==='SHOTGUN' && Date.now()<pu.endTime) {
+            spawn(0); spawn(.2); spawn(-.2);
+          } else spawn(0);
+        }, []);
+
+        const handleGrenade = useCallback((e) => {
+          e?.preventDefault(); e?.stopPropagation();
+          if (grenadesR.current > 0 && !frozenR.current) {
+            playPowerUp();
+            grenadesR.current--;
+            setGrenades(grenadesR.current);
+            frozenR.current = true; setFrozen(true);
+            freezeEnd.current = Date.now() + 4000;
+            puR.current = 'TIME FROZEN!'; setActivePU('TIME FROZEN!');
+          }
+        }, []);
+
+        const handleDeath = useCallback(() => {
+          cancelAnimationFrame(raf.current);
+          playScream();
+          const nl = livesR.current - 1;
+          livesR.current = nl; setLives(nl);
+          if (nl > 0) {
+            setGameOver('INFECTED!');
+            setTimeout(() => { setGameOver(null); initRound(levelR.current); raf.current = requestAnimationFrame(loop); }, 1500);
+          } else {
+            goR.current = 'GAME OVER'; setGameOver('GAME OVER');
+            setTimeout(onExit, 4000);
+          }
+        }, [initRound, onExit]);
+
+        const handleLevelUp = useCallback(() => {
+          cancelAnimationFrame(raf.current);
+          playWin();
+          const nl = levelR.current + 1;
+          const nLives = Math.min(livesR.current+1, 5);
+          livesR.current = nLives; setLives(nLives);
+          scoreR.current += nl*500; setScore(scoreR.current);
+          setGameOver(`LEVEL ${levelR.current} CLEARED`);
+          setTimeout(() => {
+            levelR.current = nl; setLevel(nl);
+            setGameOver(null); initRound(nl);
+            raf.current = requestAnimationFrame(loop);
+          }, 2500);
+        }, [initRound]);
+
+        const loop = useCallback(() => {
+          if (goR.current || showMissR.current) return;
+          if (!containerRef.current) return;
+          const { width:W, height:H } = containerRef.current.getBoundingClientRect();
+          const now = Date.now();
+
+          if (frozenR.current && now > freezeEnd.current) {
+            frozenR.current = false; setFrozen(false);
+            if (puR.current === 'TIME FROZEN!') { puR.current = null; setActivePU(null); }
+          }
+          if (puR.current && puR.current !== 'TIME FROZEN!' && now > puState.current.endTime) {
+            puR.current = null; puState.current.type = null; setActivePU(null);
+          }
+          if (now - lastItem.current > 5000) { if (Math.random()>.4) spawnItem(W,H); lastItem.current=now; }
+
+          // Auto-shoot
+          if (now - lastAuto.current > 600) {
+            const px=pPos.current.x+25, py=pPos.current.y+25;
+            let nd=Infinity, nDir={x:1,y:0};
+            [...zPos.current, ...bosses.current].forEach(z => {
+              const dx=(z.x+30)-px, dy=(z.y+30)-py, d=Math.hypot(dx,dy);
+              if (d<nd && d<250) { nd=d; nDir={x:dx/d, y:dy/d}; }
+            });
+            if (nd < 250) { aimDir.current=nDir; handleShoot(); lastAuto.current=now; }
+          }
+
+          // Player move
+          let spd = BASE_SPEED;
+          if (puState.current.type==='SPEED' && now<puState.current.endTime) spd*=1.5;
+          const k = keys.current;
+          if (k.has('arrowup')||k.has('w'))    pPos.current.y -= spd;
+          if (k.has('arrowdown')||k.has('s'))  pPos.current.y += spd;
+          if (k.has('arrowleft')||k.has('a'))  { pPos.current.x -= spd; aimDir.current={x:-1,y:0}; }
+          if (k.has('arrowright')||k.has('d')) { pPos.current.x += spd; aimDir.current={x:1,y:0}; }
+          pPos.current.x += joystick.current.dx * spd;
+          pPos.current.y += joystick.current.dy * spd;
+          pPos.current.x = Math.max(0, Math.min(W-50, pPos.current.x));
+          pPos.current.y = Math.max(0, Math.min(H-50, pPos.current.y));
+
+          // Bullets
+          for (let i=bullets.current.length-1;i>=0;i--) {
+            const b=bullets.current[i]; b.x+=b.vx; b.y+=b.vy;
+            if (b.x<-50||b.x>W+50||b.y<-50||b.y>H+50) bullets.current.splice(i,1);
+          }
+
+          // Zombies
+          const fr=frozenR.current;
+          const zSpd=(ZOMBIE_SPD+levelR.current*.15)*(fr?0:1);
+          const bSpd=BOSS_SPD*(fr?0:1);
+          let caught=false;
+          const px=pPos.current.x, py=pPos.current.y;
+
+          for (let zi=zPos.current.length-1;zi>=0;zi--) {
+            const z=zPos.current[zi]; let dead=false;
+            for (let bi=bullets.current.length-1;bi>=0;bi--) {
+              const b=bullets.current[bi];
+              if (Math.hypot((z.x+30)-b.x,(z.y+30)-b.y)<40) {
+                dead=true; bullets.current.splice(bi,1);
+                scoreR.current += 10+levelR.current*5;
+                setKills(k=>k+1); playGroan(); break;
+              }
+            }
+            if (dead) { zPos.current[zi]=safePos(W,H,pPos.current,SAFE_R); }
+            else {
+              const dx=px-z.x, dy=py-z.y, ang=Math.atan2(dy,dx);
+              z.x+=Math.cos(ang)*zSpd; z.y+=Math.sin(ang)*zSpd;
+              if (Math.abs(z.x-px)<30&&Math.abs(z.y-py)<30) caught=true;
+            }
+          }
+
+          for (let bi=bosses.current.length-1;bi>=0;bi--) {
+            const boss=bosses.current[bi];
+            for (let bui=bullets.current.length-1;bui>=0;bui--) {
+              const b=bullets.current[bui];
+              if (Math.hypot((boss.x+40)-b.x,(boss.y+40)-b.y)<60) {
+                boss.hp -= b.isSpecial?3:1; bullets.current.splice(bui,1);
+                if (boss.hp<=0) { scoreR.current+=200+levelR.current*50; setKills(k=>k+10); playNuke(); bosses.current.splice(bi,1); break; }
+              }
+            }
+            if (bosses.current[bi]) {
+              const dx=px-boss.x,dy=py-boss.y,ang=Math.atan2(dy,dx);
+              boss.x+=Math.cos(ang)*bSpd; boss.y+=Math.sin(ang)*bSpd;
+              if (Math.abs(boss.x-px)<50&&Math.abs(boss.y-py)<50) caught=true;
+            }
+          }
+
+          // Items
+          for (let i=items.current.length-1;i>=0;i--) {
+            const it=items.current[i];
+            if (Math.hypot((it.x+20)-(px+25),(it.y+20)-(py+25))<50) {
+              items.current.splice(i,1); scoreR.current+=50;
+              if (it.type==='NUKE') {
+                playNuke(); puR.current='NUKE BLAST!'; setActivePU('NUKE BLAST!');
+                puState.current={type:'NUKE',endTime:now+1000};
+                zPos.current.forEach((_,zi)=>{ zPos.current[zi]=safePos(W,H,pPos.current,SAFE_R); });
+                bosses.current.forEach(b=>b.hp-=5);
+                scoreR.current+=zPos.current.length*10; setKills(k=>k+zPos.current.length);
+              } else if (it.type==='MEDKIT') {
+                playPowerUp(); const nl=Math.min(livesR.current+1,5); livesR.current=nl; setLives(nl);
+                puR.current='HEALTH RESTORED'; setActivePU('HEALTH RESTORED');
+                puState.current={type:'MEDKIT',endTime:now+1000};
+              } else if (it.type==='GRENADE') {
+                playPowerUp(); grenadesR.current++; setGrenades(grenadesR.current);
+                puR.current='TIME GRENADE +1'; setActivePU('TIME GRENADE +1');
+              } else {
+                playPowerUp();
+                const dur=it.type==='MACHINE_GUN'?8000:10000;
+                puState.current={type:it.type,endTime:now+dur};
+                puR.current=it.type.replace('_',' '); setActivePU(puR.current);
+              }
+            }
+          }
+
+          renderDOM();
+          if (caught) { handleDeath(); return; }
+          if (Math.abs(exitPos.current.x-px)<40&&Math.abs(exitPos.current.y-py)<40) { handleLevelUp(); return; }
+          if (now-lastZSnd.current>Math.max(1000,3000-levelR.current*200)) { if(Math.random()>.6) playGroan(); lastZSnd.current=now; }
+          raf.current = requestAnimationFrame(loop);
+        }, [handleShoot, handleDeath, handleLevelUp]);
+
+        useEffect(() => {
+          if (!showMiss) { const t=setTimeout(()=>initRound(levelR.current),100); return ()=>clearTimeout(t); }
+        }, [initRound, showMiss]);
+
+        useEffect(() => {
+          const dn = e => {
+            keys.current.add(e.key.toLowerCase());
+            if (e.key===' '||e.key==='z') { e.preventDefault(); handleShoot(); }
+            if (e.key==='g') handleGrenade();
+          };
+          const up = e => keys.current.delete(e.key.toLowerCase());
+          window.addEventListener('keydown',dn); window.addEventListener('keyup',up);
+          return () => { window.removeEventListener('keydown',dn); window.removeEventListener('keyup',up); };
+        }, []);
+
+        useEffect(() => {
+          goR.current=null; raf.current=requestAnimationFrame(loop);
+          return () => cancelAnimationFrame(raf.current);
+        }, [loop]);
+
+        const jLogic = useCallback((cx,cy) => {
+          if (!joystickBaseRef.current||!joystickStickRef.current) return;
+          const r=joystickBaseRef.current.getBoundingClientRect();
+          const mx=r.left+r.width/2, my=r.top+r.height/2, maxD=r.width/2;
+          const dx=cx-mx, dy=cy-my, dist=Math.min(maxD,Math.hypot(dx,dy)), ang=Math.atan2(dy,dx);
+          const sx=Math.cos(ang)*dist, sy=Math.sin(ang)*dist;
+          joystickStickRef.current.style.transform=`translate(${sx}px,${sy}px)`;
+          joystick.current.dx=sx/maxD; joystick.current.dy=sy/maxD;
+          if (dist>10) aimDir.current={x:sx/maxD,y:sy/maxD};
+        }, []);
+
+        const onJMove = useCallback(e => {
+          if (!joystick.current.active) return;
+          if (e.cancelable) e.preventDefault();
+          const t='touches' in e ? e.touches[0] : e;
+          jLogic(t.clientX, t.clientY);
+        }, [jLogic]);
+
+        const onJEnd = useCallback(() => {
+          joystick.current={active:false,dx:0,dy:0};
+          if (joystickStickRef.current) {
+            joystickStickRef.current.style.transition='transform .1s ease-out';
+            joystickStickRef.current.style.transform='translate(0,0)';
+            setTimeout(()=>{ if(joystickStickRef.current) joystickStickRef.current.style.transition='none'; },100);
+          }
+          window.removeEventListener('mousemove',onJMove); window.removeEventListener('mouseup',onJEnd);
+          window.removeEventListener('touchmove',onJMove); window.removeEventListener('touchend',onJEnd);
+        }, [onJMove]);
+
+        const onJStart = e => {
+          joystick.current.active=true;
+          if (joystickStickRef.current) joystickStickRef.current.style.transition='none';
+          const t='touches' in e ? e.touches[0] : e;
+          jLogic(t.clientX, t.clientY);
+          window.addEventListener('mousemove',onJMove);
+          window.addEventListener('mouseup',onJEnd);
+          window.addEventListener('touchmove',onJMove,{passive:false});
+          window.addEventListener('touchend',onJEnd);
+        };
+
+        const bg = levelR.current===1
+          ? "https://images.unsplash.com/photo-1509347528160-9a9e33742cdb?w=1200&q=80"
+          : levelR.current===2
+          ? "https://images.unsplash.com/photo-1534796636912-3b95b3ab5986?w=1200&q=80"
+          : "https://images.unsplash.com/photo-1531366936337-7c912a4589a7?w=1200&q=80";
+
+        return h('div', { className:"absolute inset-0 z-50 overflow-hidden bg-black select-none touch-none" },
+          h('div', { className:"absolute inset-0 bg-cover bg-center pointer-events-none", style:{ backgroundImage:`url('${bg}')`, opacity:.35 } }),
+          h('div', { className:"absolute inset-0 pointer-events-none z-5", style:{ background:'linear-gradient(rgba(18,16,16,0) 50%,rgba(0,0,0,.18) 50%),linear-gradient(90deg,rgba(255,0,0,.04),rgba(0,255,0,.01),rgba(0,0,255,.04))', backgroundSize:'100% 2px,3px 100%' } }),
+          frozen && h('div', { className:"absolute inset-0 bg-blue-500 mix-blend-color-dodge opacity-20 pointer-events-none z-10 animate-pulse" }),
+
+          // Mission modal
+          showMiss && h('div', { className:"absolute inset-0 z-[100] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4" },
+            h('div', { className:"bg-gray-900 border-2 border-red-800 rounded-lg max-w-md w-full p-6 shadow-[0_0_30px_rgba(255,0,0,.3)]" },
+              h('h2', { className:"font-['Nosifer'] text-3xl text-red-600 mb-4 text-center tracking-wider" }, 'MISIÓN'),
+              h('div', { className:"text-gray-300 space-y-2 text-sm mb-6" },
+                h('p', null, '👮‍♂️ Eres la última línea de defensa.'),
+                h('p', null, '🛸 Llega a la nave para subir de nivel.'),
+                h('p', null, '⏱️ Granadas de tiempo congelan zombis.'),
+                h('p', null, '👹 ¡Cuidado con el CARNICERO en nivel 3!'),
+                h('p', { className:"text-yellow-400" }, '⌨️ WASD/flechas + Espacio en PC.'),
+              ),
+              h('button', {
+                onClick: () => { showMissR.current=false; setShowMiss(false); },
+                className:"w-full bg-red-900 hover:bg-red-700 text-white font-['Creepster'] text-2xl py-2 rounded border border-red-500 transition-colors animate-pulse"
+              }, '¡ACEPTAR MISIÓN!')
+            )
+          ),
+
+          // Game canvas
+          h('div', { ref:containerRef, className:"absolute inset-0 w-full h-full" },
+            h('div', { id:'gp', className:"absolute top-0 left-0 text-5xl z-30 will-change-transform drop-shadow-[0_0_10px_rgba(255,255,255,.3)]" },
+              h('div', { className:"survivor-container" }, '👮‍♂️')
+            ),
+            h('div', { id:'gc-bul', className:"absolute inset-0 pointer-events-none z-20" }),
+            h('div', { id:'gc-itm', className:"absolute inset-0 pointer-events-none z-20" }),
+            h('div', { id:'ge', className:"absolute top-0 left-0 text-6xl z-20 animate-pulse drop-shadow-[0_0_25px_rgba(50,255,50,.6)]" }, '🛸'),
+            ...Array.from({ length: BASE_Z + Math.floor(levelR.current*1.5) + 2 }, (_,i) =>
+              h('div', { key:i, className:"gz absolute top-0 left-0 text-6xl z-20 will-change-transform" }, '🧟')
+            ),
+            h('div', { id:'gc-boss', className:"absolute inset-0 pointer-events-none z-20" }),
+          ),
+
+          // HUD
+          h('div', { className:"absolute top-4 right-4 flex flex-col items-end font-['Creepster'] z-40 pointer-events-none drop-shadow-md" },
+            h('div', { className:"text-4xl text-red-600 animate-pulse" }, `LEVEL ${level}`),
+            h('div', { className:"text-2xl flex items-center gap-1 text-white" }, 'HP: ',
+              ...Array.from({length:5},(_,i) => h('span', { key:i, className:i<lives?'text-red-500':'opacity-0' }, '🩸'))
+            ),
+            h('div', { className:"text-xl text-yellow-500" }, `KILLS: ${kills}`),
+            h('div', { className:"text-lg text-cyan-300" }, 'SCORE: ', h('span', { id:'hud-sc' }, score)),
+            activePU && h('div', { className:"mt-1 text-xl text-cyan-400 animate-bounce" }, activePU),
+          ),
+
+          // Abort
+          h('button', { onClick:onExit, className:"absolute top-4 left-4 font-mono text-xs text-gray-400 border border-gray-800 bg-black/50 px-3 py-2 rounded z-50 hover:bg-white hover:text-black transition-colors" }, 'ABORT'),
+
+          // Joystick
+          h('div', {
+            ref:joystickBaseRef,
+            className:"absolute bottom-1 left-2 w-48 h-48 rounded-full bg-gradient-to-b from-gray-800 to-gray-900 border-4 z-40 touch-none flex items-center justify-center cursor-crosshair",
+            style:{ boxShadow:'0 0 15px rgba(239,68,68,.4),inset 0 0 10px rgba(239,68,68,.2)', borderColor:'rgba(239,68,68,.8)' },
+            onMouseDown:onJStart, onTouchStart:onJStart
+          },
+            h('span', { className:"absolute -top-7 text-[10px] font-mono tracking-widest font-bold uppercase text-red-400 bg-black/80 px-2 py-0.5 rounded" }, 'JOYSTICK'),
+            h('div', { ref:joystickStickRef, className:"w-20 h-20 rounded-full bg-gray-700 border border-gray-500 pointer-events-none flex items-center justify-center" },
+              h('div', { className:"w-10 h-10 rounded-full bg-gradient-to-br from-red-500 to-red-800 border border-red-400 animate-pulse" })
+            )
+          ),
+
+          // Action buttons
+          h('div', { className:"absolute bottom-8 right-8 flex gap-4 z-40 items-end" },
+            h('div', { className:"flex flex-col items-center gap-1" },
+              h('span', { className:"font-mono text-blue-400 text-xs font-bold tracking-widest" }, `${grenades} LEFT`),
+              h('button', {
+                className:`w-20 h-20 rounded-full border-4 flex items-center justify-center active:scale-95 bg-gray-900/80 border-blue-600/50 ${grenades===0?'opacity-50 grayscale':''}`,
+                onTouchStart:handleGrenade, onMouseDown:handleGrenade
+              }, h('span', { className:"text-3xl" }, '⏱️'))
+            ),
+            h('button', {
+              className:"w-28 h-28 rounded-full border-4 bg-red-900/60 border-red-600 flex items-center justify-center active:scale-95",
+              onTouchStart:handleShoot, onMouseDown:handleShoot
+            }, h('span', { className:"text-5xl" }, '🩸'))
+          ),
+
+          h('div', { className:"absolute bottom-4 left-1/2 -translate-x-1/2 font-mono text-[10px] text-gray-600 z-30 pointer-events-none tracking-widest" }, 'WASD · SPACE=SHOOT · G=GRENADE'),
+
+          // Game Over overlay
+          gameOver && h('div', { className:"absolute inset-0 z-50 flex flex-col items-center justify-center bg-black/95" },
+            h('h2', { className:`font-['Nosifer'] text-5xl md:text-7xl mb-4 text-center ${gameOver.includes('CLEARED')?'text-green-500 animate-bounce':'text-red-600 animate-pulse'}` }, gameOver),
+            gameOver==='GAME OVER' && h('div', { className:"text-center mt-4" },
+              h('p', { className:"text-white font-['Creepster'] text-3xl" }, `REACHED LEVEL ${level}`),
+              h('p', { className:"text-red-500 font-['Creepster'] text-2xl" }, `TOTAL KILLS: ${kills}`),
+              h('p', { className:"text-cyan-400 font-['Creepster'] text-2xl" }, `FINAL SCORE: ${scoreR.current}`),
+              h('p', { className:"text-white font-mono text-xs mt-6 animate-pulse" }, 'SYSTEM REBOOTING...')
+            )
+          )
+        );
+      }
+
+      // ── App / Menu ─────────────────────────────────────────────────────────
+      function App() {
+        const [view,      setView]     = useState('menu');
+        const [ready,     setReady]    = useState(false);
+        const [highScore, setHS]       = useState(parseInt(localStorage.getItem(HS_KEY)||'0',10));
+        const [lastScore, setLS]       = useState(0);
+        const [audioOn,   setAudio]    = useState(true);
+        const bgRef = useRef(null);
+
+        useEffect(() => { const t=setTimeout(()=>setReady(true),300); return()=>clearTimeout(t); }, []);
+        useEffect(() => {
+          const f = e => {
+            if (!bgRef.current) return;
+            const rx=(e.clientX/window.innerWidth-.5)*12, ry=(e.clientY/window.innerHeight-.5)*12;
+            bgRef.current.style.transform=`scale(1.1) translate(${rx}px,${ry}px)`;
+          };
+          window.addEventListener('mousemove',f);
+          return ()=>window.removeEventListener('mousemove',f);
+        }, []);
+
+        const startGame = () => { playStart(); setView('game'); };
+        const exitGame  = () => {
+          const fs = parseInt(document.getElementById('hud-sc')?.textContent||'0',10);
+          if (fs > highScore) { localStorage.setItem(HS_KEY,String(fs)); setHS(fs); }
+          setLS(fs||lastScore); setView('menu');
+        };
+
+        if (view==='game') return h(Game, { onExit:exitGame });
+
+        return h('div', { className:"relative w-full h-screen bg-black overflow-hidden select-none" },
+          h('div', { ref:bgRef, className:"absolute inset-0 bg-cover bg-center", style:{ backgroundImage:"url('https://images.unsplash.com/photo-1531366936337-7c912a4589a7?w=1200&q=80')", willChange:'transform' } }),
+          h('div', { className:"absolute inset-0 bg-black/65" }),
+          h('div', { className:"absolute inset-0 bg-gradient-to-t from-black via-transparent to-black/80" }),
+          h('div', { className:"absolute inset-0 bg-red-950/20 mix-blend-multiply animate-pulse", style:{ animationDuration:'3s' } }),
+          h('div', { className:"absolute inset-0", style:{ background:'repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,.08) 2px,rgba(0,0,0,.08) 4px)' } }),
+
+          h('div', { className:"relative z-20 w-full h-full flex flex-col items-center justify-between p-6 py-10" },
+            h('div', { className:"w-full max-w-2xl flex justify-between items-center" },
+              h('div', { className:"flex items-center gap-2 text-red-500/60 font-mono text-xs tracking-widest" },
+                h('span', { className:"w-2 h-2 rounded-full bg-red-600 animate-ping" }),
+                'SISTEMA COMPROMETIDO'
+              ),
+              h('button', { onClick:()=>setAudio(a=>!a), className:`p-2 rounded border ${audioOn?'border-red-800 text-red-500':'border-gray-700 text-gray-600'}` }, '🔊')
+            ),
+
+            h('div', { className:`flex flex-col items-center gap-8 transition-all duration-700 ${ready?'opacity-100 translate-y-0':'opacity-0 translate-y-8'}` },
+              h('div', { className:"text-center" },
+                h('h1', { className:"font-['Nosifer'] text-7xl md:text-9xl text-red-600 tracking-widest", style:{ textShadow:'0 0 60px rgba(220,38,38,.4)' } }, 'ZOMBIES'),
+                h('p', { className:"font-['Creepster'] text-2xl text-gray-400 mt-2 tracking-[.3em] uppercase border-b border-red-900/50 pb-2" }, 'The Last Stand'),
+                h('p', { className:"font-mono text-xs text-red-600/60 mt-1 tracking-widest animate-pulse" }, 'v.6.6.6 — SEÑAL PERDIDA')
+              ),
+
+              (highScore>0||lastScore>0) && h('div', { className:"flex gap-6" },
+                lastScore>0 && h('div', { className:"text-center bg-black/60 border border-gray-800 px-4 py-2 rounded" },
+                  h('div', { className:"font-['Creepster'] text-gray-400 text-xs tracking-widest" }, 'ÚLTIMA'),
+                  h('div', { className:"font-['Creepster'] text-white text-2xl" }, lastScore.toLocaleString())
+                ),
+                highScore>0 && h('div', { className:"text-center bg-black/60 border border-yellow-800/50 px-4 py-2 rounded" },
+                  h('div', { className:"font-['Creepster'] text-yellow-600 text-xs tracking-widest" }, '🏆 RÉCORD'),
+                  h('div', { className:"font-['Creepster'] text-yellow-400 text-2xl" }, highScore.toLocaleString())
+                )
+              ),
+
+              h('div', { className:"flex flex-col gap-3 w-64" },
+                h('button', {
+                  onClick: startGame,
+                  onMouseEnter: playHover,
+                  className:"flex items-center gap-3 px-6 py-3 w-full justify-center font-['Roboto_Mono'] text-lg tracking-widest border bg-red-950/60 border-red-700 text-white hover:bg-red-900/80 hover:border-red-500 active:scale-95 transition-all"
+                }, '💀 NUEVA PARTIDA'),
+                h('button', {
+                  onClick: () => alert('👮 MUÉVETE: WASD / Flechas / Joystick\n🔫 DISPARA: Espacio / Botón rojo\n⏱️ GRANADA: G / Botón azul\n🛸 Llega a la nave para subir de nivel\n💊 Recoge items para potenciarte'),
+                  onMouseEnter: playHover,
+                  className:"flex items-center gap-3 px-6 py-3 w-full justify-center font-['Roboto_Mono'] text-lg tracking-widest border bg-black/60 border-gray-800 text-gray-400 hover:bg-gray-900/60 hover:text-white active:scale-95 transition-all"
+                }, '⚡ INSTRUCCIONES')
+              )
+            ),
+
+            h('p', { className:"text-gray-600 font-mono text-[10px] tracking-widest opacity-40" }, 'WASD + SPACE · TOUCH COMPATIBLE')
+          )
+        );
+      }
+
+      createRoot(document.getElementById('root')).render(h(App));
+    </script>
+  </body>
+</html>
